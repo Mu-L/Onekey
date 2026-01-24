@@ -1,12 +1,13 @@
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional, Callable, Awaitable
 
 import ujson
-from .constants import STEAM_API_BASE
+
 from .config import ConfigManager
+from .constants import STEAM_API_BASE
 from .logger import Logger
+from .manifest_handler import ManifestHandler
 from .models import DepotInfo, ManifestInfo, SteamAppInfo, SteamAppManifestInfo
 from .network.client import HttpClient
-from .manifest_handler import ManifestHandler
 from .utils.i18n import t
 
 
@@ -49,87 +50,79 @@ class OnekeyApp:
         self, app_id: str, and_dlc: bool = True
     ) -> Tuple[SteamAppInfo, SteamAppManifestInfo]:
         """
-        从API获取应用数据
+        从API获取应用数据 (增加详细错误处理)
         """
         main_app_manifests = []
         dlc_manifests = []
 
-        try:
-            self.logger.info(t("api.fetching_game", app_id=app_id))
+        self.logger.info(t("api.fetching_game", app_id=app_id))
 
+        try:
             response = await self.client._client.post(
                 f"{STEAM_API_BASE}/getGame",
-                json={"appId": int(app_id), "dlc": and_dlc},
+                json={"app_id": int(app_id), "dlc": and_dlc},
                 headers={"X-Api-Key": self.config.app_config.key},
             )
-
-            if response.status == 401:
-                self.logger.error(t("api.invalid_key"))
-                return SteamAppInfo(), SteamAppManifestInfo(mainapp=[], dlcs=[])
-
-            if response.status != 200:
-                self.logger.error(t("api.request_failed", code=response.status))
-                return SteamAppInfo(), SteamAppManifestInfo(mainapp=[], dlcs=[])
-
-            data = ujson.loads(await response.content.read())
-
-            if not data:
-                self.logger.error(t("api.no_manifest"))
-                return SteamAppInfo(), SteamAppManifestInfo(mainapp=[], dlcs=[])
-
-            self.logger.info(t("api.game_name", name=data.get("name", "Unknown")))
-            self.logger.info(
-                t("api.depot_count", count=data.get("depotCount", "Unknown"))
-            )
-
-            if and_dlc:
-                for item in data.get("gameManifests", []):
-                    manifest = ManifestInfo(
-                        app_id=item["app_id"],
-                        depot_id=item["depot_id"],
-                        depot_key=item["depot_key"],
-                        manifest_id=item["manifest_id"],
-                        url=item["url"],
-                    )
-                    main_app_manifests.append(manifest)
-
-                for item in data.get("dlcManifests", []):
-                    self.logger.info(
-                        t("api.dlc_name", name=item.get("dlcName", "Unknown"))
-                    )
-                    self.logger.info(
-                        t("api.dlc_appid", id=item.get("dlcId", "Unknown"))
-                    )
-                    for manifests in item.get("manifests", []):
-                        manifest = ManifestInfo(
-                            app_id=manifests["app_id"],
-                            depot_id=manifests["depot_id"],
-                            depot_key=manifests["depot_key"],
-                            manifest_id=manifests["manifest_id"],
-                            url=manifests["url"],
-                        )
-                        dlc_manifests.append(manifest)
-            else:
-                for item in data.get("manifests", []):
-                    manifest = ManifestInfo(
-                        app_id=item["app_id"],
-                        depot_id=item["depot_id"],
-                        depot_key=item["depot_key"],
-                        manifest_id=item["manifest_id"],
-                        url=item["url"],
-                    )
-                    main_app_manifests.append(manifest)
+            content_bytes = await response.content.read()
 
         except Exception as e:
-            self.logger.error(t("api.fetch_failed", error=str(e)))
-            return SteamAppInfo(), SteamAppManifestInfo(mainapp=[], dlcs=[])
+            raise Exception(f"Network Error: {str(e)}")
+
+        try:
+            data = ujson.loads(content_bytes)
+        except ValueError:
+            self.logger.error(f"Invalid JSON response: {content_bytes[:100]}")
+            raise Exception(f"API Error (HTTP {response.status}): Invalid Response")
+
+        if response.status != 200:
+            error_msg = data.get("msg") or data.get("detail") or "Unknown Error"
+            self.logger.error(t("api.request_failed", code=response.status))
+            raise Exception(f"API Error: {error_msg}")
+
+        if data.get("code", 200) != 200:
+            error_msg = data.get("msg", "Unknown Business Error")
+            self.logger.error(f"API Business Error: {error_msg}")
+            raise Exception(f"Server Error: {error_msg}")
+
+        if not data or "data" not in data:
+            app_data = data.get("data", data)
+        else:
+            app_data = data["data"]
+
+        if not app_data:
+            self.logger.error(t("api.no_manifest"))
+            raise Exception("No game data found in response")
+
+        self.logger.info(t("api.game_name", name=app_data.get("name", "Unknown")))
+
+        for item in app_data.get("gameManifests", []):
+            manifest = ManifestInfo(
+                app_id=item["app_id"],
+                depot_id=item["depot_id"],
+                depot_key=item["depot_key"],
+                manifest_id=item["manifest_id"],
+                url=item["url"],
+            )
+            main_app_manifests.append(manifest)
+
+        if and_dlc:
+            for item in app_data.get("dlcManifests", []):
+                for manifests in item.get("manifests", []):
+                    manifest = ManifestInfo(
+                        app_id=manifests["app_id"],
+                        depot_id=manifests["depot_id"],
+                        depot_key=manifests["depot_key"],
+                        manifest_id=manifests["manifest_id"],
+                        url=manifests["url"],
+                    )
+                    dlc_manifests.append(manifest)
 
         return SteamAppInfo(
-            app_id,
-            data.get("name", ""),
-            data.get("totalDLCCount", data.get("dlcCount", 0)),
-            data.get("depotCount", 0),
-            data.get("workshopDecryptionKey", "None"),
+            int(app_id),
+            app_data.get("name", ""),
+            app_data.get("totalDLCCount", app_data.get("dlcCount", 0)),
+            app_data.get("depotCount", 0),
+            app_data.get("workshopDecryptionKey", "None"),
         ), SteamAppManifestInfo(mainapp=main_app_manifests, dlcs=dlc_manifests)
 
     def prepare_depot_data(
@@ -157,42 +150,55 @@ class OnekeyApp:
 
         return depot_data, depot_dict
 
-    async def run(self, app_id: str, tool_type: str, dlc: bool) -> bool:
+    async def run(
+        self,
+        app_id: str,
+        tool_type: str,
+        dlc: bool,
+        status_callback: Optional[Callable[[dict], Awaitable[None]]] = None,
+    ) -> bool:
         """
-        为Web版本提供的运行方法。
-
-        Args:
-            app_id: Steam应用ID
-            tool_type: 解锁工具类型 (steamtools/greenluma)
-            dlc: 是否包含DLC
-
-        Returns:
-            是否成功执行
+        status_callback: 接收 {'step': str, 'msg': str, 'progress': int}
         """
+
+        async def emit(step: str, msg: str, progress: int = -1):
+            if status_callback:
+                await status_callback({"step": step, "msg": msg, "progress": progress})
+
         try:
             if not self.config.steam_path:
-                self.logger.error(t("task.no_steam_path"))
+                await emit("error", t("task.no_steam_path"))
                 return False
 
+            await emit("auth", "Validating Key...")
             await self.fetch_key()
+
+            await emit("fetch", f"Fetching info for {app_id}...")
 
             app_info, manifests = await self.fetch_app_data(app_id, dlc)
 
             if not manifests.mainapp and not manifests.dlcs:
-                return False
+                raise Exception("Manifest list is empty")
 
             manifest_handler = ManifestHandler(
                 self.client, self.logger, self.config.steam_path
             )
 
-            processed_manifests = await manifest_handler.process_manifests(manifests)
+            async def download_progress(current_msg: str, current: int, total: int):
+                percent = int((current / total) * 100) if total > 0 else 0
+                await emit("download", current_msg, percent)
+
+            await emit("download", "Starting download...", 0)
+
+            processed_manifests = await manifest_handler.process_manifests(
+                manifests, on_progress=download_progress
+            )
 
             if not processed_manifests:
-                self.logger.error(t("task.no_manifest_processed"))
-                return False
+                raise Exception(t("task.no_manifest_processed"))
 
+            await emit("config", "Configuring Tools...", 99)
             depot_data, _ = self.prepare_depot_data(processed_manifests)
-            self.logger.info(t("tool.selected", tool=tool_type))
 
             if tool_type == "steamtools":
                 from .tools.steamtools import SteamTools
@@ -205,19 +211,19 @@ class OnekeyApp:
                 tool = GreenLuma(self.config.steam_path)
                 success = await tool.setup(depot_data, app_id)
             else:
-                self.logger.error(t("tool.invalid_selection"))
-                return False
+                raise Exception("Invalid tool type")
 
             if success:
                 self.logger.info(t("tool.config_success"))
-                self.logger.info(t("tool.restart_steam"))
+                await emit("finish", "Success! Please restart Steam.", 100)
                 return True
             else:
-                self.logger.error(t("tool.config_failed"))
-                return False
+                raise Exception("Tool configuration failed")
 
         except Exception as e:
-            self.logger.error(t("task.run_error", error=str(e)))
+            error_msg = str(e)
+            self.logger.error(t("task.run_error", error=error_msg))
+            await emit("error", error_msg)
             return False
         finally:
             await self.client.close()

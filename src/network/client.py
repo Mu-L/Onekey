@@ -10,7 +10,9 @@ class HttpClient:
     def __init__(self):
         self._client = aiohttp.ClientSession(conn_timeout=60.0)
 
-    async def get(self, url: str, headers: Optional[Dict] = None) -> aiohttp.ClientResponse:
+    async def get(
+        self, url: str, headers: Optional[Dict] = None
+    ) -> aiohttp.ClientResponse:
         """GET请求"""
         return await self._client.get(url, headers=headers)
 
