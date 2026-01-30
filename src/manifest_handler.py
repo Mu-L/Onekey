@@ -1,6 +1,5 @@
 import asyncio
 import io
-import struct
 import zipfile
 from pathlib import Path
 from typing import List, Optional, Callable, Awaitable
@@ -40,30 +39,29 @@ class ManifestHandler:
             return None
 
     @staticmethod
-    def _serialize_manifest_data(content: bytes) -> bytes:
-        magic_signature = struct.pack("<I", 0x71F617D0)
-        payload = content
-
-        if len(content) >= 4 and content[:4] == magic_signature:
-            payload = content[8:]
-        else:
-            try:
-                with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                    payload = zf.read("z")
-            except (zipfile.BadZipFile, KeyError):
-                pass
-
-        return magic_signature + struct.pack("<I", len(payload)) + payload
+    def _extract_manifest_payload(content: bytes) -> bytes:
+        """
+        提取清单数据：
+        如果是 ZIP 压缩包则解压读取 'z' 文件，否则直接返回原始内容。
+        不再添加 Magic Signature 头部。
+        """
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                return zf.read("z")
+        except (zipfile.BadZipFile, KeyError):
+            return content
 
     def process_manifest(
-        self, manifest_data: bytes, manifest_info: ManifestInfo, remove_old: bool = True
+            self, manifest_data: bytes, manifest_info: ManifestInfo, remove_old: bool = True
     ) -> bool:
         try:
             depot_id = manifest_info.depot_id
             manifest_id = manifest_info.manifest_id
 
             _ = bytes.fromhex(manifest_info.depot_key)
-            serialized_data = self._serialize_manifest_data(manifest_data)
+
+            final_data = self._extract_manifest_payload(manifest_data)
+
             manifest_path = self.depot_cache / f"{depot_id}_{manifest_id}.manifest"
 
             if remove_old:
@@ -71,15 +69,15 @@ class ManifestHandler:
                     if file.suffix == ".manifest":
                         parts = file.stem.split("_")
                         if (
-                            len(parts) == 2
-                            and parts[0] == str(depot_id)
-                            and parts[1] != str(manifest_id)
+                                len(parts) == 2
+                                and parts[0] == str(depot_id)
+                                and parts[1] != str(manifest_id)
                         ):
                             file.unlink(missing_ok=True)
                             self.logger.info(t("manifest.delete_old", name=file.name))
 
             with open(manifest_path, "wb") as f:
-                f.write(serialized_data)
+                f.write(final_data)
 
             self.logger.debug(
                 t(
@@ -95,16 +93,16 @@ class ManifestHandler:
             return False
 
     async def _process_single_task(
-        self,
-        manifest_info: ManifestInfo,
-        progress_callback: Optional[Callable[[str, int, int], Awaitable[None]]] = None,
-        current_idx: int = 0,
-        total: int = 0,
+            self,
+            manifest_info: ManifestInfo,
+            progress_callback: Optional[Callable[[str, int, int], Awaitable[None]]] = None,
+            current_idx: int = 0,
+            total: int = 0,
     ) -> Optional[ManifestInfo]:
         """处理单个清单的任务封装"""
         manifest_path = (
-            self.depot_cache
-            / f"{manifest_info.depot_id}_{manifest_info.manifest_id}.manifest"
+                self.depot_cache
+                / f"{manifest_info.depot_id}_{manifest_info.manifest_id}.manifest"
         )
 
         if manifest_path.exists():
@@ -137,9 +135,9 @@ class ManifestHandler:
             return None
 
     async def process_manifests(
-        self,
-        manifests: SteamAppManifestInfo,
-        on_progress: Optional[Callable[[str, int, int], Awaitable[None]]] = None,
+            self,
+            manifests: SteamAppManifestInfo,
+            on_progress: Optional[Callable[[str, int, int], Awaitable[None]]] = None,
     ) -> List[ManifestInfo]:
         """批量并发处理清单"""
         all_manifests = manifests.mainapp + manifests.dlcs

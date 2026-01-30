@@ -1,7 +1,9 @@
 name: DEV Test Build
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   build:
@@ -28,11 +30,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install imageio
           pip install -r requirements.txt
-          pip install nuitka
+          pip install pyinstaller
 
       - name: 编译
         run: |
-          python -m nuitka --standalone --onefile --assume-yes-for-downloads --show-memory --show-progress --onefile-tempdir-spec="%TEMP%\\onekey_%PID%_%TIME%" --windows-icon-from-ico="icon.jpg" --company-name="ikunshare" --product-name="Onekey" --file-version="${{ env.PACKAGE_VERSION }}" --product-version="${{ env.PACKAGE_VERSION }}" --file-description="Onekey Depot Manifest Downloader." --copyright="Copyright © 2025 ikunshare All Rights Reserved." --include-data-dir="web=web" --output-dir="build" --output-filename="Onekey_v${{ env.PACKAGE_VERSION }}.exe" --include-data-file="./icon.jpg=./icon.jpg" main.py
+          pyinstaller --clean --onefile --distpath build --name "Onekey_v${{ env.PACKAGE_VERSION }}" --icon "icon.jpg" --add-data "web;web" --add-data "icon.jpg;." main.py
 
       - name: 上传包
         uses: actions/upload-artifact@v4
