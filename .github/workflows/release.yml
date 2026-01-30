@@ -23,6 +23,10 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: 安装 UPX
+        shell: powershell
+        run: choco install upx --no-progress
+
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
@@ -32,7 +36,7 @@ jobs:
 
       - name: 编译
         run: |
-          pyinstaller --clean --onefile --distpath build --name "Onekey_v${{ env.PACKAGE_VERSION }}" --icon "icon.jpg" --add-data "web;web" --add-data "icon.jpg;." main.py
+          pyinstaller --onefile --distpath build --name "Onekey_v${{ env.PACKAGE_VERSION }}" --icon "icon.jpg" --add-data "web;web" --add-data "icon.jpg;." --upx-exclude=vcruntime140.dll --upx-exclude=python311.dll main.py
 
       - name: 创建标签
         uses: pkgdeps/git-tag-action@v3

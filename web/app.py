@@ -21,6 +21,7 @@ sys.path.insert(0, str(project_root))
 
 
 def get_base_path():
+    """获取运行时的基础路径"""
     if hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS)
     elif getattr(sys, "frozen", False):
@@ -29,7 +30,20 @@ def get_base_path():
         return Path(os.path.dirname(os.path.abspath(__file__)))
 
 
+def get_web_path(base_path: Path):
+    """
+    智能获取 web 资源目录
+    兼容开发环境和打包环境(--add-data "web;web")
+    """
+    web_path = base_path / "web"
+    if web_path.exists():
+        return web_path
+
+    return base_path
+
+
 base_path = get_base_path()
+web_path = get_web_path(base_path)
 
 try:
     from src.main import OnekeyApp
@@ -182,13 +196,20 @@ app.add_middleware(
 manager = ConnectionManager()
 
 config = ConfigManager()
+
+static_dir = web_path / config.app_config.language / "static"
+template_dir = web_path / config.app_config.language / "templates"
+
+if not static_dir.exists():
+    print(f"Warning: Static dir not found at {static_dir}")
+
 app.mount(
     "/static",
-    StaticFiles(directory=f"{base_path}/{config.app_config.language}/static"),
+    StaticFiles(directory=str(static_dir)),
     name="static",
 )
 templates = Jinja2Templates(
-    directory=f"{base_path}/{config.app_config.language}/templates"
+    directory=str(template_dir)
 )
 
 web_app = WebOnekeyApp(manager)
